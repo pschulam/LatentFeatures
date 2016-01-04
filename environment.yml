@@ -1,0 +1,8 @@
+name: latentfeatures
+dependencies:
+- python=3
+- numpy
+- scipy
+- matplotlib
+- ipython
+- pandas
