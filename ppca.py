@@ -7,14 +7,26 @@ from scipy.stats import multivariate_normal as mvn
 _LOG_2PI = np.log(2 * np.pi)
 
 
-def learn_param(data, hid_dim):
+def learn_ppca(data, hid_dim):
     '''Learn the parameters of probabilistic PCA.
 
     returns : mean mu, loading matrix W, and variance sigsq.
 
     '''
-    num_obs, obs_dim = data.shape
-    ppca = ProbabilisticPCA(obs_dim, hid_dim)
+    dataset = Dataset(data)    
+    m = dataset.empirical_mean()
+    S = dataset.scatter_matrix(center=m)
+    
+    U, s = la.svd(S, full_matrices=False)[:2]
+    var = np.mean(s[hid_dim:])
+    loading = U[:, :hid_dim] * np.sqrt(s[:hid_dim] - var)
+
+    ppca = ProbabilisticPCA(dataset.obs_dim, hid_dim)    
+    ppca.update_mean(m)
+    ppca.update_loading(loading)
+    ppca.update_var(var)
+
+    return ppca
 
 
 def observed_loglik(dataset, ppca):
@@ -77,17 +89,24 @@ class ProbabilisticPCA:
 
         return prec
 
-    def update_mean(self, empirical_mean):
-        self.mean[:] = empirical_mean
+    def update_mean(self, mean):
+        self.mean[:] = mean
+
+    def update_loading(self, loading):
+        self.loading[:, :] = loading
+
+    def update_var(self, var):
+        self.var = var
 
 
 class Dataset:
     def __init__(self, data):
         self.data = np.array(data)
+        self.num_obs, self.obs_dim = self.data.shape
         self.mean, self.cov = Dataset._empirical_stats(self.data)
 
     def __len__(self):
-        return len(self.data)
+        return self.num_obs
 
     def empirical_mean(self):
         return self.mean
@@ -112,7 +131,7 @@ def trace(A):
 
 
 if __name__ == '__main__':
-    num_obs = 1000
+    num_obs = 10000
     obs_dim = 6
     hid_dim = 3
     
@@ -122,3 +141,11 @@ if __name__ == '__main__':
     model.update_mean(dataset.empirical_mean())
 
     print('LL={:.8f}'.format(observed_loglik(dataset, model)))
+
+    learned = learn_ppca(X, hid_dim)
+
+    print('LL={:.8f}'.format(observed_loglik(dataset, learned)))
+    print(learned.mean)
+    print(learned.loading)
+    print(learned.var)
+    print(W)
