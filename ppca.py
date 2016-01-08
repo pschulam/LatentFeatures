@@ -4,41 +4,84 @@ import scipy.linalg as la
 from scipy.stats import multivariate_normal as mvn
 
 
-_LOG_2PI = np.log(2 * np.pi)
+class ProbabilisticPCA:
+    def __init__(self, obs_dim, hid_dim, seed=0):
+        rand = np.random.RandomState(seed)
+        self.loading = rand.normal(scale=0.1, size=(obs_dim, hid_dim))
+        self.variance = 1.0
+
+    @property
+    def obs_dim(self):
+        return self.loading.shape[0]
+
+    @property
+    def hid_dim(self):
+        return self.loading.shape[1]
+
+    def marginal_param(self):
+        d = self.obs_dim
+        m = np.zeros(d)
+        S = np.dot(self.loading, self.loading.T) + self.variance * np.eye(d)
+        return m, S
+
+    def log_likelihood(self, x):
+        return mvn.logpdf(x, *self.marginal_param())
+
+    def posterior(self, x):
+        M = np.dot(self.loading.T, self.loading) + self.variance * np.eye(self.hid_dim)
+        m = la.solve(M, np.dot(self.loading.T, x))        
+        S = self.variance * la.inv(M)
+        return m, S
 
 
-def learn_ppca(data, hid_dim):
+def learn_ppca(X, K, maxiter=100, tol=1e-4):
     '''Learn the parameters of probabilistic PCA.
 
-    returns : mean mu, loading matrix W, and variance sigsq.
-
     '''
-    dataset = Dataset(data)    
-    m = dataset.empirical_mean()
-    S = dataset.scatter_matrix(center=m)
+    m = np.mean(X, axis=0)
+    X_centered = X - m
+
+    ppca = ProbabilisticPCA(X_centered.shape[1], K)
+
+    logl = sum(ppca.log_likelihood(x) for x in X_centered)
+
+    for iteration in range(maxiter):
+        ppca.loading, ppca.variance = em_step(X_centered, ppca)
+
+        ll_old = logl
+        logl = sum(ppca.log_likelihood(x) for x in X_centered)
+        delta = (logl - ll_old) / np.abs(ll_old)
+        
+        print('iter={:04d}, LL={:8f}, dLL={:.8f}'.format(iteration, logl, delta))
+        
+        if delta < tol:
+            break
+
+    return m, ppca
+
+
+def em_step(X, ppca):
+    ss1, ss2, ss3 = expectation_step(X, ppca)
+    loading = la.solve(ss2.T, ss1.T).T
+    variance = ss3 / len(X) / ppca.obs_dim
+    return loading, variance
+
+
+def expectation_step(X, ppca):
+    W = ppca.loading
+    WtW = np.dot(W.T, W)
     
-    U, s = la.svd(S, full_matrices=False)[:2]
-    var = np.mean(s[hid_dim:])
-    loading = U[:, :hid_dim] * np.sqrt(s[:hid_dim] - var)
+    ss1 = 0.0
+    ss2 = 0.0
+    ss3 = 0.0
 
-    ppca = ProbabilisticPCA(dataset.obs_dim, hid_dim)    
-    ppca.update_mean(m)
-    ppca.update_loading(loading)
-    ppca.update_var(var)
+    for x in X:
+        m, S = ppca.posterior(x)
+        ss1 += np.outer(x, m)
+        ss2 += np.outer(m, m) + S
+        ss3 += la.norm(x - np.dot(W, m))**2 + np.diag(S * WtW).sum()
 
-    return ppca
-
-
-def observed_loglik(dataset, ppca):
-    '''The observed-data log likelihood of the data.
-
-    '''
-    N = len(dataset)
-    D = ppca.obs_dim
-    C = ppca.marginal_cov()
-    P = ppca.marginal_prec()
-    S = dataset.scatter_matrix(center=ppca.marginal_mean())
-    return -N / 2 * (D * _LOG_2PI + np.log(la.det(C)) + trace(P * S))
+    return ss1, ss2, ss3
 
 
 def simulate_data(num_obs, obs_dim, hid_dim, seed=0):
@@ -57,95 +100,17 @@ def simulate_data(num_obs, obs_dim, hid_dim, seed=0):
     return loading, latent, observed
 
 
-class ProbabilisticPCA:
-    def __init__(self, obs_dim, hid_dim):
-        self.mean    = np.zeros(obs_dim)
-        self.loading = np.zeros((obs_dim, hid_dim))
-        self.var     = 1.0
-        self.obs_dim, self.hid_dim = self.loading.shape
-
-    def marginal_mean(self):
-        '''The mean of the marginal distribution.
-
-        '''
-        return self.mean.copy()
-
-    def marginal_cov(self):
-        '''The covariance matrix of the marginal distribution.
-
-        '''
-        WWt = np.dot(self.loading, self.loading.T)
-        return WWt + self.var * np.eye(len(WWt))
-
-    def marginal_prec(self):
-        '''The precision matrix of the marginal distribution.
-
-        '''
-        prec = np.eye(self.obs_dim) / np.sqrt(self.var)
-
-        W = self.loading
-        M = np.dot(W.T, W) + self.var * np.eye(self.hid_dim)
-        prec += np.dot(W, la.solve(M, W.T)) / self.var
-
-        return prec
-
-    def update_mean(self, mean):
-        self.mean[:] = mean
-
-    def update_loading(self, loading):
-        self.loading[:, :] = loading
-
-    def update_var(self, var):
-        self.var = var
-
-
-class Dataset:
-    def __init__(self, data):
-        self.data = np.array(data)
-        self.num_obs, self.obs_dim = self.data.shape
-        self.mean, self.cov = Dataset._empirical_stats(self.data)
-
-    def __len__(self):
-        return self.num_obs
-
-    def empirical_mean(self):
-        return self.mean
-
-    def empirical_cov(self):
-        return self.cov
-
-    def scatter_matrix(self, center):
-        centered = self.data - center
-        return np.dot(centered.T, centered) / len(self.data)
-
-    @staticmethod
-    def _empirical_stats(data):
-        mean = data.mean(axis=0)
-        centered_data = data - mean
-        cov = np.dot(centered_data.T, centered_data) / len(data)
-        return mean, cov
-
-
-def trace(A):
-    return np.diag(A).sum()
-
-
 if __name__ == '__main__':
-    num_obs = 10000
-    obs_dim = 6
-    hid_dim = 3
-    
-    W, Z, X = simulate_data(num_obs, obs_dim, hid_dim)
-    dataset = Dataset(X)
-    model = ProbabilisticPCA(obs_dim, hid_dim)
-    model.update_mean(dataset.empirical_mean())
+    num_samples = 1000
+    obs_dim, hid_dim = 4, 2
+    W, Z, X = simulate_data(num_samples, obs_dim, hid_dim)
+    center, ppca = learn_ppca(X, hid_dim, tol=1e-8)
 
-    print('LL={:.8f}'.format(observed_loglik(dataset, model)))
-
-    learned = learn_ppca(X, hid_dim)
-
-    print('LL={:.8f}'.format(observed_loglik(dataset, learned)))
-    print(learned.mean)
-    print(learned.loading)
-    print(learned.var)
-    print(W)
+    print()
+    print('True subspace:')
+    print('--------------')
+    print(la.svd(W, full_matrices=False)[0])
+    print()
+    print('Learned subspace:')
+    print('-----------------')
+    print(la.svd(ppca.loading, full_matrices=False)[0])
