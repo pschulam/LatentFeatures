@@ -61,8 +61,6 @@ def learn_lmm(dataset, maxiter=500, tol=1e-5):
 
 
 def em_step(dataset, lmm):
-    beta, Sigma, _ = lmm.param_copy()
-
     ss1 = 0.0
     ss2 = 0.0
     ss3 = 0.0
@@ -70,23 +68,26 @@ def em_step(dataset, lmm):
     ss5 = 0.0
 
     for y, X, Z in dataset:
-        m, S = lmm.posterior(y, X, Z)
-        exp_res = np.sum((y - np.dot(X, beta) - np.dot(Z, m))**2)
-        exp_res += np.diag(np.dot(Z.T, Z) * Sigma).sum()
+        m_i, S_i = lmm.posterior(y, X, Z)
 
         ss1 += np.dot(X.T, X)
-        ss2 += np.dot(X.T, y - np.dot(Z, m))
+        ss2 += np.dot(X.T, y - np.dot(Z, m_i))
 
-        ss3 += S + np.outer(m, m)
+        ss3 += S_i + np.outer(m_i, m_i)
 
-        ss4 += len(y)
-        ss5 += exp_res
+        ss4 += len(y)        
 
-    beta = la.solve(ss1, ss2)
-    Sigma = ss3 / len(dataset)
+    b = la.solve(ss1, ss2)
+    S = ss3 / len(dataset)
+
+    for y, X, Z in dataset:
+        m_i, S_i = lmm.posterior(y, X, Z)
+        ss5 += np.sum((y - np.dot(X, b) - np.dot(Z, m_i))**2)
+        ss5 += np.diag(np.dot(Z.T, Z) * S_i).sum()
+
     v = ss5 / ss4
 
-    return beta, Sigma, v
+    return b, S, v
 
 
 if __name__ == '__main__':
@@ -115,8 +116,8 @@ if __name__ == '__main__':
     
     plt.plot(xgrid, np.dot(Xgrid, b), label='Mean')
 
-    U, S, _ = la.svd(S, full_matrices=False)
-    princomp = (U * np.sqrt(S)).T
+    U, D, _ = la.svd(S, full_matrices=False)
+    princomp = (U * np.sqrt(D)).T
     for k, u in enumerate(princomp[:2]):
         plt.plot(xgrid, np.dot(Xgrid, u), label='PC {}'.format(k + 1))
 
